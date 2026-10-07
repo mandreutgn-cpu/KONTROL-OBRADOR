@@ -447,6 +447,17 @@
   #traz-root .ko-rrow small { display:block; color:var(--ink-soft); font-size:11px; }
   #traz-root .ko-add { display:grid; grid-template-columns:1fr 70px 56px auto; gap:6px; margin-top:12px; }
   #traz-root .ko-chipx { display:inline-block; background:var(--paper-2); border-radius:20px; padding:4px 10px; margin:0 4px 6px 0; font-size:12.5px; }
+  #traz-root .lmp-grupo { margin-top:10px; }
+  #traz-root .lmp-gt { display:flex; align-items:center; gap:10px; font-weight:700; font-size:13.5px; padding:6px 0; border-bottom:1px solid var(--line); }
+  #traz-root .lmp-gt small { color:var(--ink-soft); font-weight:600; }
+  #traz-root .lmp-prog { flex:1; height:6px; background:var(--line); border-radius:6px; overflow:hidden; max-width:180px; margin-left:auto; }
+  #traz-root .lmp-prog i { display:block; height:100%; background:var(--moss); }
+  #traz-root .lmp-row { display:flex; justify-content:space-between; align-items:center; gap:10px; padding:9px 2px; border-bottom:1px solid var(--paper-2); }
+  #traz-root .lmp-row b { font-size:14.5px; } #traz-root .lmp-row small { display:block; font-size:11.5px; color:var(--ink-soft); margin-top:2px; }
+  #traz-root .lmp-row.atr { background:var(--danger-soft); border-radius:6px; padding-left:8px; padding-right:8px; }
+  #traz-root .lmp-row .btn { padding:11px 16px; font-size:13.5px; flex-shrink:0; }
+  #traz-root .lmp-hechas summary { cursor:pointer; font-size:12px; color:var(--moss); font-weight:700; padding:6px 0; }
+  #traz-root .lmp-ok { font-size:12.5px; padding:3px 0 3px 10px; color:var(--ink); } #traz-root .lmp-ok small { color:var(--ink-soft); }
   #traz-root .modal-overlay {
     position: fixed; inset: 0; background: rgba(38,36,32,.55);
     display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px;
@@ -1038,7 +1049,7 @@
   function renderHomeGrid() {
     const grid = root.querySelector('#home-grid');
     if (!grid) return;
-    const counts = { recepcion: recepciones.length, fichas: recetas.length, produccion: producciones.length, catalogo: bandejas.length, entrega: entregas.length, muestras: muestrasTestigo.length, trazar: null, inventario: inventarios.length, compra: activos(pedidosCompra).length, temperaturas: activos(temperaturas).length, agua: activos(calidadAgua).length, limpieza: activos(limpieza).length, informe: null };
+    const counts = { recepcion: recepciones.length, fichas: recetas.length, produccion: producciones.length, catalogo: bandejas.length, entrega: entregas.length, muestras: muestrasTestigo.length, trazar: null, inventario: inventarios.length, compra: activos(pedidosCompra).length, temperaturas: activos(temperaturas).length, agua: activos(calidadAgua).length, limpieza: (planLimpieza.length ? (resumenPendientesLimpieza().total || null) : activos(limpieza).length), informe: null };
     grid.innerHTML = SECCIONES.map(s => `
       <button class="home-card" data-go="${s.tab}">
         <span class="home-card-icon">${s.icon}</span>
@@ -1074,8 +1085,18 @@
     if (!hayInventarioEstaSemana) avisos.push('📦 Todavía no se ha hecho ningún inventario esta semana.');
 
     // Sin limpieza registrada esta semana
-    const hayLimpiezaEstaSemana = activos(limpieza).some(l => semanaDe(l.fecha).clave === inicioSemana);
-    if (!hayLimpiezaEstaSemana) avisos.push('🧹 Todavía no se ha registrado limpieza esta semana.');
+    if (planLimpieza.length) {
+      const rl = resumenPendientesLimpieza();
+      const partes = [];
+      if (rl.Diaria.pend) partes.push(`${rl.Diaria.pend} de hoy`);
+      if (rl.Semanal.pend) partes.push(`${rl.Semanal.pend} de esta semana`);
+      if (rl.Mensual.pend) partes.push(`${rl.Mensual.pend} de este mes`);
+      const atr = rl.Diaria.atr + rl.Semanal.atr + rl.Mensual.atr;
+      if (partes.length) avisos.splice(avisos.filter(x => x.indexOf('🌡️') === 0).length, 0, `🧹 Limpiezas pendientes: ${partes.join(', ')}${atr ? ` <b style="color:var(--danger)">(${atr} atrasada${atr > 1 ? 's' : ''})</b>` : ''} — <a href="#" data-ir-limpieza style="color:var(--moss);font-weight:700">ver</a>`);
+    } else {
+      const hayLimpiezaEstaSemana = activos(limpieza).some(l => semanaDe(l.fecha).clave === inicioSemana);
+      if (!hayLimpiezaEstaSemana) avisos.push('🧹 Todavía no se ha registrado limpieza esta semana.');
+    }
     const sinDesinf = planLimpieza.filter(z => z.requiereDesinfeccion && !z.desinfeccionId).length;
     if (sinDesinf) avisos.push(`🧹 ${sinDesinf} zona${sinDesinf > 1 ? 's' : ''} del plan de limpieza no ${sinDesinf > 1 ? 'tienen' : 'tiene'} desinfectante definido.`);
 
@@ -1092,6 +1113,8 @@
         ${avisos.map(a => `<div class="aviso-linea">${a}</div>`).join('')}
       </div>
     `;
+    const irL = box.querySelector('[data-ir-limpieza]');
+    if (irL) irL.addEventListener('click', e => { e.preventDefault(); goToTab('limpieza'); });
   }
 
   function goToTab(tab) {
@@ -5935,6 +5958,68 @@ Incluye una entrada por cada producto distinto pedido. Si no puedes leer algo co
 
   function zonasSinDesinfectante() { return planLimpieza.filter(z => z.requiereDesinfeccion && !z.desinfeccionId); }
 
+  // ---------- PENDIENTES DE LIMPIEZA (avisos según la frecuencia del plan) ----------
+  // Diaria: hay que hacerla cada día · Semanal: una vez en la semana (lunes a domingo)
+  // · Mensual: una vez en el mes. Se mira la última limpieza registrada de cada zona.
+  let filtroRespLimpieza = '';
+  function estadoLimpieza(hoy) {
+    hoy = hoy || todayISO();
+    const ult = new Map();
+    activos(limpieza).forEach(l => { if (!l.fecha || l.fecha > hoy) return; const k = normalizeText(l.zona); if (!ult.has(k) || l.fecha > ult.get(k).fecha) ult.set(k, l); });
+    const semana = semanaDe(hoy).clave, mes = hoy.slice(0, 7);
+    const dias = f => Math.round((new Date(hoy + 'T00:00:00') - new Date(f + 'T00:00:00')) / 864e5);
+    return planLimpieza.filter(z => ['Diaria', 'Semanal', 'Mensual'].includes(z.frecuencia)).map(z => {
+      const l = ult.get(normalizeText(z.zona)) || null, u = l ? l.fecha : null, d = u ? dias(u) : null;
+      let hecha = false, atrasada = false;
+      if (z.frecuencia === 'Diaria') { hecha = u === hoy; atrasada = !hecha && d !== null && d >= 2; }
+      if (z.frecuencia === 'Semanal') { hecha = !!u && semanaDe(u).clave === semana; atrasada = !hecha && d !== null && d > 7; }
+      if (z.frecuencia === 'Mensual') { hecha = !!u && u.slice(0, 7) === mes; atrasada = !hecha && d !== null && d > 31; }
+      return { z, ultima: u, quien: l ? (l.responsable || '') : '', dias: d, hecha, atrasada };
+    });
+  }
+  function resumenPendientesLimpieza() {
+    const e = estadoLimpieza(), r = {};
+    ['Diaria', 'Semanal', 'Mensual'].forEach(f => { const xs = e.filter(x => x.z.frecuencia === f); r[f] = { total: xs.length, pend: xs.filter(x => !x.hecha).length, atr: xs.filter(x => !x.hecha && x.atrasada).length }; });
+    r.total = r.Diaria.pend + r.Semanal.pend + r.Mensual.pend;
+    return r;
+  }
+  function pintarPendientesLimpieza() {
+    const box = root.querySelector('#lmp-pendientes');
+    if (!box) return;
+    if (!planLimpieza.length) { box.innerHTML = ''; return; }
+    const e = estadoLimpieza();
+    const personas = [...new Set(planLimpieza.map(z => (z.responsable || '').trim()).filter(Boolean))].sort();
+    if (filtroRespLimpieza && !personas.includes(filtroRespLimpieza)) filtroRespLimpieza = '';
+    const visibles = e.filter(x => !filtroRespLimpieza || (x.z.responsable || '') === filtroRespLimpieza);
+    const fmt = f => { if (!f) return 'nunca'; const [y, m, d] = f.split('-'); return d + '/' + m; };
+    const grupos = [['Diaria', 'Hoy', 'diarias'], ['Semanal', 'Esta semana', 'semanales'], ['Mensual', 'Este mes', 'mensuales']];
+    const totalPend = visibles.filter(x => !x.hecha).length;
+    box.innerHTML = `<div class="card" style="border-color:${totalPend ? 'var(--amber)' : 'var(--moss)'}">
+      <h3 style="justify-content:space-between">📋 Pendiente de limpiar <span class="badge ${totalPend ? 'wait' : 'ok'}">${totalPend ? totalPend + ' pendiente' + (totalPend > 1 ? 's' : '') : 'Todo hecho'}</span></h3>
+      ${personas.length > 1 ? `<div class="semana-tabs" style="margin-bottom:8px"><button class="semana-tab ${filtroRespLimpieza ? '' : 'active'}" data-resp="">Todos</button>${personas.map(p => `<button class="semana-tab ${filtroRespLimpieza === p ? 'active' : ''}" data-resp="${esc(p)}">${esc(p)}</button>`).join('')}</div>` : ''}
+      ${grupos.map(([f, titulo, plural]) => {
+        const xs = visibles.filter(x => x.z.frecuencia === f).sort((a, b) => (b.atrasada - a.atrasada) || normalizeText(a.z.zona).localeCompare(normalizeText(b.z.zona)));
+        if (!xs.length) return '';
+        const pend = xs.filter(x => !x.hecha), hechas = xs.filter(x => x.hecha);
+        return `<div class="lmp-grupo"><div class="lmp-gt"><span>${titulo} <small>· ${plural}</small></span><span class="lmp-prog"><i style="width:${Math.round(hechas.length / xs.length * 100)}%"></i></span><small>${hechas.length}/${xs.length}</small></div>
+          ${pend.map(x => `<div class="lmp-row ${x.atrasada ? 'atr' : ''}"><div><b>${esc(x.z.zona)}</b>${x.atrasada ? ' <span class="badge err">atrasada</span>' : ''}
+              <small>${esc(x.z.responsable || 'sin responsable')} · última: ${fmt(x.ultima)}${x.dias != null && x.dias > 0 ? ' (hace ' + x.dias + ' día' + (x.dias > 1 ? 's' : '') + ')' : ''}</small></div>
+              <button class="btn primary" data-hecha="${esc(x.z.id)}">✓ Hecho</button></div>`).join('')}
+          ${hechas.length ? `<details class="lmp-hechas"><summary>✔ ${hechas.length} hecha${hechas.length > 1 ? 's' : ''}</summary>${hechas.map(x => `<div class="lmp-ok">${esc(x.z.zona)} <small>· ${fmt(x.ultima)}${x.quien ? ' · ' + esc(x.quien) : ''}</small></div>`).join('')}</details>` : ''}</div>`;
+      }).join('')}
+    </div>`;
+    box.querySelectorAll('[data-resp]').forEach(b => b.addEventListener('click', () => { filtroRespLimpieza = b.dataset.resp; pintarPendientesLimpieza(); }));
+    box.querySelectorAll('[data-hecha]').forEach(b => b.addEventListener('click', async () => {
+      const z = planLimpieza.find(x => x.id === b.dataset.hecha); if (!z) return;
+      b.disabled = true; b.innerHTML = '<span class="spin"></span>';
+      const rec = { id: newId(), zona: z.zona, frecuencia: z.frecuencia, fecha: todayISO(), producto: textoProductosZona(z), responsable: filtroRespLimpieza || z.responsable || '', obs: '', status: 'ACTIVO' };
+      const intento = limpieza.concat([rec]);
+      const ok = await saveList('limpieza', intento);
+      if (ok) { limpieza = intento; semanaSeleccionadaLimpieza = semanaDe(rec.fecha).clave; renderLimpiezaList(); renderAvisosPanel(); showToast(`Limpieza de "${z.zona}" registrada.`, 'ok'); }
+      else { b.disabled = false; b.textContent = '✓ Hecho'; }
+    }));
+  }
+
   function renderLimpieza() {
     const panel = root.querySelector('#panel-limpieza');
     const grupos = [['Diaria', 'Diarias'], ['Semanal', 'Semanales'], ['Mensual', 'Mensuales'], ['Otra', 'Otras']];
@@ -5944,9 +6029,10 @@ Incluye una entrada por cada producto distinto pedido. Si no puedes leer algo co
     }).join('') + '<option value="Otro">Otro</option>';
     panel.innerHTML = `
       <p class="lead">Registro de limpieza y desinfección — control APPCC, sin relación con la trazabilidad de lotes.</p>
+      <div id="lmp-pendientes"></div>
 
       <div class="card">
-        <h3>🧹 Registrar limpieza</h3>
+        <h3>🧹 Registrar otra limpieza</h3>
         <div class="grid">
           <div><label>Zona / elemento</label>
             <select id="lmp-zona">${opcionesZona}</select>
@@ -6027,6 +6113,7 @@ Incluye una entrada por cada producto distinto pedido. Si no puedes leer algo co
   }
 
   function renderLimpiezaList() {
+    pintarPendientesLimpieza();
     const box = root.querySelector('#control-limpieza-list');
     if (!box) return;
     if (limpieza.length === 0) { box.innerHTML = '<div class="empty">Todavía no hay limpiezas guardadas.</div>'; return; }

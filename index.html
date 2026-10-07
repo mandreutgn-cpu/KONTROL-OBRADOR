@@ -458,6 +458,12 @@
   #traz-root .lmp-row .btn { padding:11px 16px; font-size:13.5px; flex-shrink:0; }
   #traz-root .lmp-hechas summary { cursor:pointer; font-size:12px; color:var(--moss); font-weight:700; padding:6px 0; }
   #traz-root .lmp-ok { font-size:12.5px; padding:3px 0 3px 10px; color:var(--ink); } #traz-root .lmp-ok small { color:var(--ink-soft); }
+  #traz-root .lc-ul { margin:0 0 4px; padding-left:2px; list-style:none; font-size:13.5px; line-height:1.9; }
+  #traz-root .lc-ul label { display:flex; gap:8px; align-items:center; font-size:13.5px; color:var(--ink); font-weight:400; margin:0; }
+  #traz-root .lc-ul input { width:18px; height:18px; }
+  #traz-root .lc-ley { border-left:3px solid var(--moss); padding:4px 0 4px 10px; margin-bottom:10px; }
+  #traz-root .lc-ley-t { font-weight:700; font-size:13.5px; } #traz-root .lc-ley-t > span:first-child { color:var(--ink-soft); font-weight:600; }
+  #traz-root .lc-ley-r { font-size:12.5px; color:var(--ink-soft); line-height:1.5; margin-top:2px; } #traz-root .lc-ley-r b { color:var(--ink); }
   #traz-root .modal-overlay {
     position: fixed; inset: 0; background: rgba(38,36,32,.55);
     display: flex; align-items: center; justify-content: center; z-index: 50; padding: 16px;
@@ -3892,7 +3898,7 @@ Incluye todos los ingredientes que aparezcan en la ficha, con su cantidad para l
   function renderCompra() {
     const panel = root.querySelector('#panel-compra');
     panel.innerHTML = `
-      <p class="lead">Haced una foto del resumen de encargos de la semana (o de un pedido). La lista calcula las bandejas y fichas que hay que hacer, los ingredientes que llevan y les resta lo que ya tenéis en el inventario.</p>
+      <p class="lead">Haced una foto del resumen de encargos de la semana (o de un pedido). La lista junta todos los productos que hacen falta, por secciones del súper, con una leyenda de lo que lleva cada bandeja o producto.</p>
       <div id="compra-catalogo"></div>
 
       <div class="card">
@@ -3956,7 +3962,7 @@ Incluye todos los ingredientes que aparezcan en la ficha, con su cantidad para l
       renderPedidoExtractForm();
       root.querySelector('#ped-extract-form').scrollIntoView({ behavior: 'smooth', block: 'start' });
     });
-    panel.querySelector('#ped-generar-lista').addEventListener('click', abrirListaDeCompraV2);
+    panel.querySelector('#ped-generar-lista').addEventListener('click', abrirListaDeCompra);
 
     renderPedidosList();
     pintarAvisoCatalogo();
@@ -4969,193 +4975,205 @@ Incluye una entrada por cada producto distinto pedido. Si no puedes leer algo co
     return 'Otros';
   }
 
-  function calcularListaDeCompra() {
-    const porProducto = [];
-    const comprasDirectas = []; // productos pedidos sin ficha técnica: se compran tal cual
-    const sinFichaDentroDeBandeja = new Map(); // nombre referencia -> candidato más parecido (o null)
-    activos(pedidosCompra).forEach(pedido => {
-      (pedido.items || []).forEach(it => {
-        const resuelto = resolverIngredientesDeProducto(it.producto);
-        if (!resuelto) {
-          // No hay ficha técnica ni bandeja para esto — no es una elaboración, es algo
-          // que se compra ya hecho (p.ej. una tortilla). Va directo a la lista tal cual.
-          porProducto.push({ producto: it.producto, cliente: pedido.cliente, ingredientes: [it.producto], directo: true });
-          comprasDirectas.push(it.producto);
-          return;
-        }
-        resuelto.ingredientes.forEach(ing => { if (ing.sinFicha) sinFichaDentroDeBandeja.set(ing.nombre, ing.candidato || null); });
-        const nombres = [...new Set(resuelto.ingredientes.map(ing => ing.nombre).filter(Boolean))].sort((a, b) => normalizeText(a).localeCompare(normalizeText(b)));
-        porProducto.push({ producto: it.producto, cliente: pedido.cliente, ingredientes: nombres, porReferencia: resuelto.porReferencia });
-      });
-    });
-    // también un resumen único de todo lo que hace falta, sin repetir, por si se
-    // prefiere ir a comprar con una sola lista en vez de mirarla producto a producto
-    const todosUnicos = [...new Set(porProducto.flatMap(p => p.ingredientes))].sort((a, b) => normalizeText(a).localeCompare(normalizeText(b)));
-    // agrupado por categoría de alimento, en el orden habitual de compra
-    const porCategoria = CATEGORIAS_COMPRA.map(cat => ({
-      nombre: cat.nombre,
-      items: todosUnicos.filter(n => categorizarProducto(n) === cat.nombre)
-    })).filter(g => g.items.length > 0);
-    const otros = todosUnicos.filter(n => categorizarProducto(n) === 'Otros');
-    if (otros.length) porCategoria.push({ nombre: 'Otros', items: otros });
-    return { porProducto, todosUnicos, comprasDirectas, sinFichaDentroDeBandeja, porCategoria };
+  // ==================================================================
+  // LISTA DE LA COMPRA: todos los productos por secciones del súper
+  // + leyenda con lo que lleva cada bandeja / producto pedido
+  // ==================================================================
+  // Qué es cada producto pedido: lo que ya se decidió (mapeo), las palabras de
+  // «no es comida» (bebidas, servicios, menaje…) y, si no, el emparejamiento de siempre.
+  function resolverProductoPedido(nombre) {
+    const k = nk(nombre);
+    const mapa = mapeoConfig();
+    let g = mapa.find(x => nk(x.nombre) === k);
+    if (!g) { let mejor = null, p = 0; mapa.forEach(x => { const s = semblanzaKO(k, nk(x.nombre)); if (s > p) { p = s; mejor = x; } }); if (mejor && p >= 0.85) g = mejor; }
+    if (g && g.accion === 'IGNORAR') return { ignorar: true };
+    if (g && g.accion === 'BANDEJA') { const t = bandejaPorNombre(g.ref); if (t) return { tipo: 'bandeja', t }; }
+    if (g && g.accion === 'FICHA') { const r = fichaPorNombre(g.ref); if (r) return { tipo: 'ficha', r }; }
+    if (!g && KO_SEED.ignorar.some(w => conteKO(k, w))) return { ignorar: true };
+    let mb = null, sb = 0;
+    catalogoBandejas.forEach(t => { const s = matchScore(t.nombre, nombre); if (s > sb) { sb = s; mb = t; } });
+    if (mb && sb >= 55) return { tipo: 'bandeja', t: mb };
+    const r = mejorFichaPara(nombre);
+    if (r) return { tipo: 'ficha', r };
+    return { tipo: 'directo' };
   }
+  const nombresIngredientes = r => [...new Set((r.ingredientes || []).map(i => (i.nombre || '').trim()).filter(Boolean))];
+
+  function calcularListaDeCompra() {
+    // 1) Juntar todos los pedidos pendientes por producto
+    const prods = new Map();
+    activos(pedidosCompra).forEach(pedido => (pedido.items || []).forEach(it => {
+      if (!it.producto) return;
+      const k = nk(it.producto);
+      const x = prods.get(k) || { producto: String(it.producto).trim(), cantidad: 0, clientes: [] };
+      if (it.cantidad != null && it.cantidad !== '') x.cantidad += Number(it.cantidad) || 0;
+      if (pedido.cliente && !x.clientes.includes(pedido.cliente)) x.clientes.push(pedido.cliente);
+      prods.set(k, x);
+    }));
+    // 2) Cada producto → sus ingredientes (leyenda)
+    const leyenda = [], ignorados = [], comprasDirectas = [];
+    const sinFichaDentroDeBandeja = new Map();
+    const todos = new Set();
+    [...prods.values()].sort((a, b) => normalizeText(a.producto).localeCompare(normalizeText(b.producto))).forEach(x => {
+      const res = resolverProductoPedido(x.producto);
+      if (res.ignorar) { ignorados.push(x.producto); return; }
+      const e = { producto: x.producto, cantidad: x.cantidad, clientes: x.clientes, tipo: res.tipo, ref: '', referencias: [], ingredientes: [] };
+      if (res.tipo === 'bandeja') {
+        e.ref = res.t.nombre;
+        (res.t.referencias || []).forEach(ref => {
+          if (cantRef(ref) === 0) return;
+          const nombreRef = refNombre(ref);
+          const r = (ref.ficha && fichaPorNombre(ref.ficha)) || mejorFichaPara(nombreRef);
+          if (!r) { sinFichaDentroDeBandeja.set(nombreRef, (mejorCandidatoFicha(nombreRef) || {}).producto || null); e.referencias.push({ nombre: nombreRef, sinFicha: true, ingredientes: [] }); todos.add(nombreRef); return; }
+          const ings = nombresIngredientes(r);
+          e.referencias.push({ nombre: nombreRef, ficha: r.producto, unidades: cantRef(ref), ingredientes: ings, compradoHecho: r.tipoCompra === 'COMPRADO' });
+          (r.tipoCompra === 'COMPRADO' ? [r.producto] : ings).forEach(n => todos.add(n));
+          if (r.tipoCompra === 'COMPRADO') comprasDirectas.push(r.producto);
+        });
+      } else if (res.tipo === 'ficha') {
+        e.ref = res.r.producto;
+        if (res.r.tipoCompra === 'COMPRADO') { e.ingredientes = []; e.compradoHecho = true; todos.add(res.r.producto); comprasDirectas.push(res.r.producto); }
+        else { e.ingredientes = nombresIngredientes(res.r); e.ingredientes.forEach(n => todos.add(n)); }
+      } else {
+        comprasDirectas.push(x.producto); todos.add(x.producto);
+      }
+      leyenda.push(e);
+    });
+    // 3) Lista única, por secciones del súper (en el orden de siempre)
+    const vistos = new Set();
+    const todosUnicos = [...todos].filter(n => { const k = nk(n); if (!k || vistos.has(k)) return false; vistos.add(k); return !(ingredientesConfig().find(m => nk(m.nombre) === k) || {}).noComprar; })
+      .sort((a, b) => normalizeText(a).localeCompare(normalizeText(b)));
+    const seccion = n => { const sc = seccionCompra(n, (ingredientesConfig().find(m => nk(m.nombre) === nk(n)) || {}).inv || ''); return sc === 'Productos ya hechos' ? categorizarProducto(n) : sc; };
+    const nombresSec = CATEGORIAS_COMPRA.map(c => c.nombre).concat(['Otros']);
+    const porCategoria = nombresSec.map(nombre => ({ nombre, items: todosUnicos.filter(n => seccion(n) === nombre) })).filter(g => g.items.length);
+    return { leyenda, porCategoria, todosUnicos, comprasDirectas, sinFichaDentroDeBandeja, ignorados };
+  }
+
+  function textoCantidad(e) { return e.cantidad ? '×' + fnum(e.cantidad) : ''; }
 
   function abrirListaDeCompra() {
     if (activos(pedidosCompra).length === 0) { showToast('Añade al menos un pedido antes de generar la lista de la compra.', 'error'); return; }
-    const { porProducto, todosUnicos, comprasDirectas, sinFichaDentroDeBandeja, porCategoria } = calcularListaDeCompra();
-    const overlay = document.createElement('div');
-    overlay.className = 'modal-overlay';
-    overlay.innerHTML = `
-      <div class="modal-card" style="max-width:520px">
-        <button class="modal-close" id="lc-close">✕</button>
+    const L = calcularListaDeCompra();
+    const etiqueta = n => L.comprasDirectas.includes(n) ? ' <span style="font-size:10.5px;color:var(--steel)">(se compra ya hecho)</span>'
+      : (L.sinFichaDentroDeBandeja.has(n) ? ` <span style="font-size:10.5px;color:var(--amber)">(sin ficha técnica${L.sinFichaDentroDeBandeja.get(n) ? ` — ¿quizás «${esc(L.sinFichaDentroDeBandeja.get(n))}»?` : ''})</span>` : '');
+    const ov = abrirModalKO(`
         <h3 style="margin:0 0 4px">🛒 Lista de la compra</h3>
-        <p style="font-size:12px;color:var(--ink-soft);margin:0 0 12px">Lo que hace falta para los pedidos pendientes: ingredientes de las fichas técnicas, y los productos que se compran ya hechos, tal cual.</p>
+        <p style="font-size:12px;color:var(--ink-soft);margin:0 0 12px">Todo lo que hace falta para los pedidos pendientes, por secciones. Abajo, la leyenda con lo que lleva cada producto.</p>
+        ${L.porCategoria.length ? L.porCategoria.map(g => `
+          <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--moss);margin:14px 0 6px;border-bottom:1px solid var(--line);padding-bottom:4px">${esc(g.nombre)} <span style="color:var(--ink-soft);font-weight:600">(${g.items.length})</span></h3>
+          <ul class="lc-ul">${g.items.map(n => `<li><label><input type="checkbox"> ${esc(n)}${etiqueta(n)}</label></li>`).join('')}</ul>`).join('') : '<div class="empty">No se ha podido calcular ningún ingrediente.</div>'}
 
-        ${porCategoria.length ? porCategoria.map(g => `
-          <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--moss);margin:14px 0 6px;border-bottom:1px solid var(--line);padding-bottom:4px">${esc(g.nombre)}</h3>
-          <ul style="margin:0 0 4px;padding-left:20px;font-size:13px;line-height:1.7">
-            ${g.items.map(n => `<li>${esc(n)}${comprasDirectas.includes(n) ? ' <span style="font-size:10.5px;color:var(--steel)">(se compra ya hecho)</span>' : (sinFichaDentroDeBandeja.has(n) ? ` <span style="font-size:10.5px;color:var(--amber)" title="Esta referencia de una bandeja no ha encontrado ficha técnica">(sin ficha técnica${sinFichaDentroDeBandeja.get(n) ? ' — ¿quizás \'' + esc(sinFichaDentroDeBandeja.get(n)) + '\'?' : ''})</span>` : '')}</li>`).join('')}
-          </ul>
-        `).join('') : '<div class="empty">No se ha podido calcular ningún ingrediente.</div>'}
-
-        ${porProducto.length ? `
-        <h3 style="font-size:12px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-soft);margin:18px 0 6px">Por cada pedido</h3>
-        ${porProducto.map(p => `
-          <div style="margin-bottom:12px">
-            <strong style="font-size:13px">${esc(p.producto)}</strong> <span style="font-size:11px;color:var(--ink-soft)">(${esc(p.cliente)})</span>${p.directo ? ' <span style="font-size:10.5px;color:var(--steel)">— se compra ya hecho, sin ficha técnica</span>' : ''}
-            ${p.porReferencia && p.porReferencia.length ? `
-              <div style="margin-top:4px;padding-left:10px;border-left:2px solid var(--line)">
-                ${p.porReferencia.map(r => `
-                  <div style="font-size:12px;margin:3px 0">
-                    <strong style="color:var(--ink-soft)">${esc(r.referencia)}</strong>${r.sinFicha ? ` <span style="color:var(--amber);font-size:10.5px">(sin ficha técnica${r.candidato ? ` — ¿quizás '${esc(r.candidato)}'?` : ''})</span>` : `: ${r.ingredientes.length ? r.ingredientes.map(esc).join(', ') : '—'}`}
-                  </div>
-                `).join('')}
-              </div>
-            ` : `<div style="font-size:12.5px;color:var(--ink-soft);margin-top:2px">${p.ingredientes.length ? p.ingredientes.map(esc).join(', ') : '— sin ingredientes en la ficha técnica —'}</div>`}
-          </div>
-        `).join('')}` : ''}
+        <h3 style="font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink);margin:22px 0 8px;padding-top:12px;border-top:2px solid var(--ink)">📖 Leyenda: qué lleva cada producto</h3>
+        ${L.leyenda.map(e => `<div class="lc-ley">
+          <div class="lc-ley-t">${esc(e.producto)} <span>${esc(textoCantidad(e))}</span>${e.tipo === 'bandeja' ? ` <span class="badge ok">bandeja ${esc(e.ref)}</span>` : e.tipo === 'directo' || e.compradoHecho ? ' <span class="badge wait">se compra ya hecho</span>' : ''}</div>
+          ${e.tipo === 'bandeja' ? e.referencias.map(rf => `<div class="lc-ley-r"><b>${esc(rf.nombre)}</b>${rf.unidades && rf.unidades !== 1 ? ` <span>(${fnum(rf.unidades)} por bandeja)</span>` : ''}: ${rf.sinFicha ? '<em style="color:var(--amber)">sin ficha técnica</em>' : rf.compradoHecho ? '<em>se compra ya hecho</em>' : esc(rf.ingredientes.join(', ') || '— la ficha no tiene ingredientes —')}</div>`).join('')
+            : e.tipo === 'ficha' && !e.compradoHecho ? `<div class="lc-ley-r">${esc(e.ingredientes.join(', ') || '— la ficha no tiene ingredientes —')}</div>` : ''}
+        </div>`).join('')}
+        ${L.ignorados.length ? `<details style="margin-top:12px"><summary style="font-size:11.5px;color:var(--ink-soft);cursor:pointer">No se cuentan (no es comida): ${L.ignorados.length}</summary><div style="font-size:11.5px;color:var(--ink-soft);margin-top:6px;line-height:1.6">${L.ignorados.map(esc).join(' · ')}</div></details>` : ''}
 
         <div class="actions" style="margin-top:14px">
           <button class="btn primary" id="lc-pdf">📄 Descargar PDF</button>
           <button class="btn ghost" id="lc-print" style="font-size:11px;padding:6px 10px">🖨️ Imprimir</button>
           <button class="btn ghost" id="lc-csv" style="font-size:11px;padding:6px 10px">Exportar CSV</button>
-        </div>
-      </div>
-    `;
-    root.appendChild(overlay);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
-    overlay.querySelector('#lc-close').addEventListener('click', () => overlay.remove());
-    overlay.querySelector('#lc-print').addEventListener('click', () => printRawHTML(buildListaCompraHTML(porProducto, porCategoria, comprasDirectas, sinFichaDentroDeBandeja)));
-    overlay.querySelector('#lc-pdf').addEventListener('click', async (e) => {
-      const btn = e.currentTarget;
-      const textoOriginal = btn.textContent;
+        </div>`, 620);
+    ov.querySelector('#lc-print').addEventListener('click', () => printRawHTML(buildListaCompraHTML(L)));
+    ov.querySelector('#lc-pdf').addEventListener('click', async (e) => {
+      const btn = e.currentTarget, t = btn.textContent;
       btn.disabled = true; btn.innerHTML = '<span class="spin"></span> Generando PDF…';
-      try {
-        await descargarListaCompraPDF(porProducto, porCategoria, comprasDirectas, sinFichaDentroDeBandeja);
-      } catch (err) {
-        showToast(err.message || 'No se pudo generar el PDF.', 'error');
-      } finally {
-        btn.disabled = false; btn.textContent = textoOriginal;
-      }
+      try { await descargarListaCompraPDF(L); } catch (err) { showToast(err.message || 'No se pudo generar el PDF.', 'error'); }
+      finally { btn.disabled = false; btn.textContent = t; }
     });
-    overlay.querySelector('#lc-csv').addEventListener('click', () => {
-      const filas = porProducto.flatMap(p => p.ingredientes.map(ing => [p.producto, p.cliente, ing, categorizarProducto(ing), p.directo ? 'compra directa' : 'ficha técnica']));
-      const csv = toCSV(['producto_pedido', 'cliente', 'ingrediente_necesario', 'categoria', 'origen'], filas);
-      downloadCSV('lista_de_la_compra_' + todayISO() + '.csv', csv);
+    ov.querySelector('#lc-csv').addEventListener('click', () => {
+      const filas = L.porCategoria.flatMap(g => g.items.map(n => [g.nombre, n]));
+      const ley = L.leyenda.flatMap(e => e.tipo === 'bandeja' ? e.referencias.map(rf => [e.producto, rf.nombre, rf.ingredientes.join(', ')]) : [[e.producto, e.ref || '', e.ingredientes.join(', ')]]);
+      downloadCSV('lista_de_la_compra_' + todayISO() + '.csv', toCSV(['seccion', 'producto'], filas) + '\n\n' + toCSV(['producto_pedido', 'referencia', 'ingredientes'], ley));
     });
   }
 
-  // Genera un PDF real y descargable (no pasa por el diálogo de impresión del sistema).
-  async function descargarListaCompraPDF(porProducto, porCategoria, comprasDirectas, sinFichaDentroDeBandeja) {
+  // PDF real y descargable
+  async function descargarListaCompraPDF(L) {
     await ensureJsPDFLib();
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF();
-    const margenIzq = 14;
-    let y = 20;
-    const saltoPagina = () => { if (y > 280) { doc.addPage(); y = 20; } };
-
-    doc.setFontSize(17); doc.setFont(undefined, 'bold');
-    doc.text('Lista de la compra', margenIzq, y); y += 7;
-    doc.setFontSize(9); doc.setFont(undefined, 'normal'); doc.setTextColor(120, 116, 106);
-    doc.text('Generado el ' + todayISO() + ' · A partir de los pedidos pendientes', margenIzq, y); y += 10;
-    doc.setTextColor(38, 36, 32);
-
-    porCategoria.forEach(g => {
-      saltoPagina();
-      doc.setFontSize(11); doc.setFont(undefined, 'bold'); doc.setTextColor(30, 74, 56);
-      doc.text(g.nombre, margenIzq, y); y += 6;
-      doc.setFontSize(10.5); doc.setFont(undefined, 'normal'); doc.setTextColor(38, 36, 32);
-      g.items.forEach(item => {
-        saltoPagina();
-        const candidatoPdf = sinFichaDentroDeBandeja.get(item);
-        const sufijo = comprasDirectas.includes(item) ? '  (se compra ya hecho)' : (sinFichaDentroDeBandeja.has(item) ? `  (sin ficha técnica${candidatoPdf ? " - ¿quizas '" + candidatoPdf + "'?" : ''})` : '');
-        const lineas = doc.splitTextToSize('• ' + item + sufijo, 180);
-        lineas.forEach(l => { saltoPagina(); doc.text(l, margenIzq + 3, y); y += 5.5; });
+    const M = 14; let y = 18;
+    const salto = (h) => { if (y + (h || 6) > 285) { doc.addPage(); y = 18; } };
+    doc.setFont(undefined, 'bold'); doc.setFontSize(17); doc.setTextColor(38, 36, 32); doc.text('Lista de la compra', M, y); y += 6;
+    doc.setFont(undefined, 'normal'); doc.setFontSize(9); doc.setTextColor(120, 116, 106);
+    doc.text('Generado el ' + todayISO() + ' · ' + L.todosUnicos.length + ' productos · a partir de los pedidos pendientes', M, y); y += 8;
+    // Lista en dos columnas, por secciones
+    const colX = [M, 108], colW = 88, top = y;
+    let col = 0;
+    const nuevaCol = () => { if (col === 0) { col = 1; y = top; } else { doc.addPage(); col = 0; y = 18; } };
+    L.porCategoria.forEach(g => {
+      if (y + 12 > 285) nuevaCol();
+      doc.setFont(undefined, 'bold'); doc.setFontSize(10.5); doc.setTextColor(70, 89, 47);
+      doc.text(g.nombre, colX[col], y); doc.setDrawColor(222, 216, 200); doc.line(colX[col], y + 1.5, colX[col] + colW, y + 1.5); y += 6;
+      doc.setFont(undefined, 'normal'); doc.setFontSize(10); doc.setTextColor(38, 36, 32);
+      g.items.forEach(n => {
+        const suf = L.comprasDirectas.includes(n) ? ' (ya hecho)' : (L.sinFichaDentroDeBandeja.has(n) ? ' (sin ficha)' : '');
+        const lineas = doc.splitTextToSize(n + suf, colW - 6);
+        if (y + lineas.length * 4.8 > 285) nuevaCol();
+        doc.setDrawColor(90, 90, 90); doc.rect(colX[col], y - 3, 3, 3);
+        lineas.forEach((l, i) => { doc.text(l, colX[col] + 5, y); y += 4.8; });
       });
       y += 3;
     });
-
-    if (porProducto.length) {
-      saltoPagina(); y += 2;
-      doc.setFontSize(12); doc.setFont(undefined, 'bold'); doc.setTextColor(38, 36, 32);
-      doc.text('Por cada pedido', margenIzq, y); y += 7;
-      porProducto.forEach(p => {
-        saltoPagina();
-        doc.setFontSize(10.5); doc.setFont(undefined, 'bold');
-        doc.text(`${p.producto} (${p.cliente})${p.directo ? ' — se compra ya hecho' : ''}`, margenIzq, y); y += 5;
-        doc.setFontSize(9.5); doc.setFont(undefined, 'normal'); doc.setTextColor(120, 116, 106);
-        if (p.porReferencia && p.porReferencia.length) {
-          p.porReferencia.forEach(r => {
-            saltoPagina();
-            doc.setFont(undefined, 'bold');
-            const candidatoTxt = r.sinFicha ? `  (sin ficha técnica${r.candidato ? " - ¿quizas '" + r.candidato + "'?" : ''})` : '';
-            doc.text('- ' + r.referencia + candidatoTxt, margenIzq + 2, y); y += 5;
-            doc.setFont(undefined, 'normal');
-            if (!r.sinFicha) {
-              const detalleRef = r.ingredientes.length ? r.ingredientes.join(', ') : '—';
-              doc.splitTextToSize(detalleRef, 172).forEach(l => { saltoPagina(); doc.text(l, margenIzq + 6, y); y += 5; });
-            }
-          });
-        } else {
-          const detalle = p.ingredientes.length ? p.ingredientes.join(', ') : '— sin ingredientes en la ficha técnica —';
-          const lineas = doc.splitTextToSize(detalle, 180);
-          lineas.forEach(l => { saltoPagina(); doc.text(l, margenIzq, y); y += 5; });
-        }
-        doc.setTextColor(38, 36, 32);
-        y += 3;
+    // Leyenda
+    doc.addPage(); y = 18; col = 0;
+    doc.setFont(undefined, 'bold'); doc.setFontSize(14); doc.setTextColor(38, 36, 32); doc.text('Leyenda: qué lleva cada producto', M, y); y += 8;
+    L.leyenda.forEach(e => {
+      salto(12);
+      doc.setFont(undefined, 'bold'); doc.setFontSize(10.5); doc.setTextColor(38, 36, 32);
+      const tit = e.producto + (e.cantidad ? '  ×' + fnum(e.cantidad) : '') + (e.tipo === 'bandeja' ? '   [bandeja ' + e.ref + ']' : (e.tipo === 'directo' || e.compradoHecho ? '   [se compra ya hecho]' : ''));
+      doc.splitTextToSize(tit, 182).forEach(l => { salto(); doc.text(l, M, y); y += 5; });
+      doc.setFontSize(9); doc.setTextColor(90, 88, 80);
+      const filas = e.tipo === 'bandeja' ? e.referencias.map(rf => ({ t: rf.nombre + (rf.unidades && rf.unidades !== 1 ? ' (' + fnum(rf.unidades) + '/band.)' : ''), d: rf.sinFicha ? 'sin ficha técnica' : rf.compradoHecho ? 'se compra ya hecho' : (rf.ingredientes.join(', ') || '—') }))
+        : (e.tipo === 'ficha' && !e.compradoHecho ? [{ t: '', d: e.ingredientes.join(', ') || '—' }] : []);
+      filas.forEach(f => {
+        const pre = f.t ? f.t + ': ' : '';
+        doc.setFont(undefined, 'bold'); const wPre = pre ? doc.getTextWidth(pre) : 0;
+        doc.setFont(undefined, 'normal');
+        const primera = doc.splitTextToSize(f.d, 176 - wPre);
+        const resto = primera.length > 1 ? doc.splitTextToSize(primera.slice(1).join(' '), 176) : [];
+        salto();
+        if (pre) { doc.setFont(undefined, 'bold'); doc.text(pre, M + 4, y); doc.setFont(undefined, 'normal'); }
+        doc.text(primera[0] || '', M + 4 + wPre, y); y += 4.3;
+        resto.forEach(l => { salto(); doc.text(l, M + 4, y); y += 4.3; });
       });
-    }
-
+      y += 2.5;
+    });
     doc.save('lista_de_la_compra_' + todayISO() + '.pdf');
     showToast('PDF descargado.', 'ok');
   }
 
-  function buildListaCompraHTML(porProducto, porCategoria, comprasDirectas, sinFichaDentroDeBandeja) {
+  function buildListaCompraHTML(L) {
+    const et = n => L.comprasDirectas.includes(n) ? ' <span class="d">(se compra ya hecho)</span>' : (L.sinFichaDentroDeBandeja.has(n) ? ' <span class="d">(sin ficha técnica)</span>' : '');
     return `<!DOCTYPE html><html><head><meta charset="UTF-8"><title>Lista de la compra</title>
       <style>
         @page { size: auto; margin: 12mm; }
-        body{font-family:-apple-system,Segoe UI,sans-serif;color:#262420;background:#fff;margin:0;padding:24px;max-width:700px}
-        h1{font-size:22px;margin:0 0 4px}
-        h2{font-size:13px;text-transform:uppercase;letter-spacing:.04em;color:#46592F;margin:20px 0 6px;border-bottom:1px solid #ddd;padding-bottom:4px}
-        h3.seccion{font-size:15px;margin:26px 0 4px;padding-top:10px;border-top:2px solid #262420}
-        .sub{color:#78746A;font-size:12.5px;margin-bottom:20px}
-        ul{margin:0 0 4px;padding-left:20px;font-size:14px;line-height:1.9}
-        .prod{margin-bottom:10px}
-        .prod b{font-size:13.5px}
-        .prod .cli{font-size:11px;color:#78746A}
-        .prod .ing{font-size:12.5px;color:#444;margin-top:2px}
-        .directo{font-size:10.5px;color:#2F4A5C}
+        body{font-family:-apple-system,Segoe UI,sans-serif;color:#262420;background:#fff;margin:0;padding:24px;max-width:760px}
+        h1{font-size:22px;margin:0 0 4px} .sub{color:#78746A;font-size:12.5px;margin-bottom:16px}
+        .cols{column-count:2;column-gap:28px}
+        .sec{break-inside:avoid;margin-bottom:12px}
+        h2{font-size:12.5px;text-transform:uppercase;letter-spacing:.04em;color:#46592F;margin:0 0 6px;border-bottom:1px solid #ddd;padding-bottom:4px}
+        ul{margin:0;padding-left:0;list-style:none;font-size:13.5px;line-height:1.8} li:before{content:"☐  ";color:#555}
+        .d{font-size:10.5px;color:#2F4A5C}
+        .ley{page-break-before:always} .ley h1{font-size:18px;margin-bottom:12px}
+        .p{break-inside:avoid;margin-bottom:10px;border-left:3px solid #46592F;padding-left:10px}
+        .p b.t{font-size:13.5px} .p .tag{font-size:10.5px;color:#46592F;background:#EAEEDF;border-radius:10px;padding:1px 7px;margin-left:6px}
+        .r{font-size:12px;color:#444;margin-top:2px;line-height:1.45} .r b{color:#262420}
         .print-hint{background:#F1EEE4;border:1px solid #DED8C8;padding:10px 14px;border-radius:8px;font-size:12px;color:#78746A;margin-bottom:20px}
         @media print{.print-hint{display:none}}
       </style></head>
       <body>
         <div class="print-hint">Para guardar como PDF: usa el botón imprimir y elige "Guardar como PDF".</div>
         <h1>🛒 Lista de la compra</h1>
-        <div class="sub">Generado el ${esc(todayISO())} · A partir de los pedidos pendientes</div>
-        ${porCategoria.map(g => `<h2>${esc(g.nombre)}</h2><ul>${g.items.map(n => `<li>${esc(n)}${comprasDirectas.includes(n) ? ' <span class="directo">(se compra ya hecho)</span>' : (sinFichaDentroDeBandeja.has(n) ? ` <span class="directo">(sin ficha técnica${sinFichaDentroDeBandeja.get(n) ? " — ¿quizás '" + esc(sinFichaDentroDeBandeja.get(n)) + "'?" : ''})</span>` : '')}</li>`).join('')}</ul>`).join('')}
-        <h3 class="seccion">Por cada pedido</h3>
-        ${porProducto.map(p => `<div class="prod"><b>${esc(p.producto)}</b> <span class="cli">(${esc(p.cliente)})</span>${p.directo ? ' <span class="directo">— se compra ya hecho</span>' : ''}<div class="ing">${p.ingredientes.length ? p.ingredientes.map(esc).join(', ') : '— sin ingredientes en la ficha técnica —'}</div></div>`).join('')}
+        <div class="sub">Generado el ${esc(todayISO())} · ${L.todosUnicos.length} productos · a partir de los pedidos pendientes</div>
+        <div class="cols">${L.porCategoria.map(g => `<div class="sec"><h2>${esc(g.nombre)}</h2><ul>${g.items.map(n => `<li>${esc(n)}${et(n)}</li>`).join('')}</ul></div>`).join('')}</div>
+        <div class="ley"><h1>📖 Leyenda: qué lleva cada producto</h1>
+        ${L.leyenda.map(e => `<div class="p"><b class="t">${esc(e.producto)}</b> ${e.cantidad ? '×' + fnum(e.cantidad) : ''}${e.tipo === 'bandeja' ? `<span class="tag">bandeja ${esc(e.ref)}</span>` : (e.tipo === 'directo' || e.compradoHecho ? '<span class="tag">se compra ya hecho</span>' : '')}
+          ${e.tipo === 'bandeja' ? e.referencias.map(rf => `<div class="r"><b>${esc(rf.nombre)}</b>${rf.unidades && rf.unidades !== 1 ? ` (${fnum(rf.unidades)} por bandeja)` : ''}: ${rf.sinFicha ? '<em>sin ficha técnica</em>' : rf.compradoHecho ? '<em>se compra ya hecho</em>' : esc(rf.ingredientes.join(', ') || '—')}</div>`).join('')
+            : (e.tipo === 'ficha' && !e.compradoHecho ? `<div class="r">${esc(e.ingredientes.join(', ') || '—')}</div>` : '')}</div>`).join('')}</div>
       </body></html>`;
   }
 
